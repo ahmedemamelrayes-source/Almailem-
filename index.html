@@ -39,7 +39,7 @@ a{color:var(--b);cursor:pointer;font-size:12px}
 <script>
 const SB_URL='https://ugxavgsprxovsifzihqz.supabase.co',
       SB_KEY='sb_publishable_tRUJDDRxZfBMA9WnuB6zuQ_2nnho62X',
-      VER='v1.0 · 2026-11-24';
+      VER='v1.1 · 2026-11-24';
 const sb=supabase.createClient(SB_URL,SB_KEY);
 const $=s=>document.querySelector(s),
   esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),
@@ -148,7 +148,7 @@ async function pdel(id){
 }
 
 function set(){
-  return `<div class="card"><b>${esc(S.me.full_name)}</b> <span class="k">(${S.me.role})</span><p><button class="s" onclick="out()">تسجيل خروج</button></p></div>${ADM()?`<div class="card"><b>إضافة مشروع</b><label>اسم المشروع</label><input id="pn"><label>العميل</label><input id="pc"><p><button onclick="padd()">إضافة المشروع</button></p></div>`:''}<div class="card"><b>نسخة احتياطية</b><p class="k">تنزّل ملف JSON بكل بياناتك. خذ نسخة أسبوعياً.</p><button onclick="backup()">تحميل النسخة الاحتياطية</button></div><p class="k">الإصدار ${VER}</p>`;
+  return `<div class="card"><b>${esc(S.me.full_name)}</b> <span class="k">(${S.me.role})</span><p><button class="s" onclick="out()">تسجيل خروج</button></p></div>${ADM()?`<div class="card"><b>إضافة مشروع</b><label>اسم المشروع</label><input id="pn"><label>العميل</label><input id="pc"><p><button onclick="padd()">إضافة المشروع</button></p></div>`:''}${ADM()?`<div class="card"><b>استيراد من نسخة قديمة</b><p class="k">اختر ملف النسخة الاحتياطية JSON من النظام القديم. يعمل مرة واحدة فقط على نظام فاضي.</p><input type="file" accept=".json,application/json" onchange="imp(this)"></div>`:''}<div class="card"><b>نسخة احتياطية</b><p class="k">تنزّل ملف JSON بكل بياناتك. خذ نسخة أسبوعياً.</p><button onclick="backup()">تحميل النسخة الاحتياطية</button></div><p class="k">الإصدار ${VER}</p>`;
 }
 async function padd(){
   const n=$('#pn').value.trim();if(!n)return alert('اكتب اسم المشروع');
@@ -162,6 +162,50 @@ async function backup(){
   a.download='backup-'+today()+'.json';a.click();
 }
 
+async function imp(inp){
+  if(S.P.length||S.E.length||S.I.length){inp.value='';return alert('الاستيراد يتم على نظام فاضي فقط حتى لا تتكرر البيانات.')}
+  const f=inp.files[0];if(!f)return;let d;
+  try{d=JSON.parse(await f.text())}catch(e){inp.value='';return alert('الملف ليس نسخة احتياطية صالحة')}
+  if(!confirm('استيراد كل البيانات من الملف؟ يستغرق نحو دقيقة.'))return;
+  const ins=async(t,rows)=>{const out=[];for(let i=0;i<rows.length;i+=200){const r=await sb.from(t).insert(rows.slice(i,i+200)).select('id');if(r.error)throw new Error(t+': '+r.error.message);out.push(...r.data)}return out};
+  const rev=r=>(r.flags||[]).includes('date'),mo=r=>r.month||String(r.date).slice(0,7);
+  try{
+    const st=d.settings||{},oldP=st.projects||[],pm={};
+    const np=await ins('projects',oldP.map(p=>({name:p.name,client:p.client||null,location:p.location||null})));
+    oldP.forEach((p,i)=>pm[p.id]=np[i].id);
+    const dp=pm.mofleh||np[0].id,pid=x=>pm[x]||dp,dr=st.drive||{};
+    const u=await sb.from('settings').update({company_name:st.company||undefined,logo:st.logo||null,logo_full:st.logoFull||null,use_letterhead:!!st.letterhead,margin_top_cm:st.top??4.5,margin_bottom_cm:st.bottom??2.5,excluded_months:st.excluded||[],drive_root_id:dr.root||null,drive_receipts_id:dr.receipts||null}).eq('id',1);
+    if(u.error)throw new Error('settings: '+u.error.message);
+    const L=(d.subs||{}).lists||[],X=(d.ledger||{}).exp||[],I=(d.ledger||{}).inc||[],am={};
+    const na=await ins('custom_accounts',L.map(l=>({project_id:pid(l.project),name:l.name||'حساب'})));
+    L.forEach((l,i)=>am['l:'+l.id]=na[i].id);
+    await ins('expenses',X.map(r=>({project_id:pid(r.project),entry_date:r.date,month:mo(r),description:r.desc||'-',actual:r.actual||0,budget:r.budget||0,grp:r.group==='supplement'?'supplement':'main',account_id:am[r.acct]||null,receipts:r.receipts||[],needs_review:rev(r)})));
+    await ins('income',I.map(r=>({project_id:pid(r.project),entry_date:r.date,month:mo(r),description:r.desc||'-',amount:r.amount||0,kind:r.kind==='pending'?'pending':'cash',note:r.note||null,needs_review:rev(r)})));
+    const used=new Set(),items=[];let all=0;
+    L.forEach(l=>{const ex=X.filter(r=>r.acct==='l:'+l.id);(l.items||[]).forEach(it=>{all++;const k=ex.findIndex(r=>!used.has(r.id)&&+r.actual===+it.amount);if(k>=0){used.add(ex[k].id);return}items.push({account_id:am['l:'+l.id],item_date:it.date||null,category:it.cat||null,description:it.desc||'-',amount:it.amount||0,receipts:it.receipts||[],needs_review:rev(it)})})});
+    if(items.length)await ins('account_items',items);
+    const R=(d.dues||{}).receivables||[];
+    if(R.length)await ins('receivables',R.map(r=>({party:(r.party||'').trim()||null,entry_date:r.date||null,amount:r.amount||0,status:r.status==='collected'?'collected':'open',collected_on:r.collected||null,note:r.note||null})));
+    const M=(d.subs||{}).mats||[];
+    if(M.length)await ins('materials',M.map(m=>({project_id:dp,entry_date:m.date||null,category:m.cat||null,description:m.desc||null,amount:m.amount||0,receipts:m.receipts||[],needs_review:rev(m)})));
+    const SU=(d.subs||{}).subs||[],nm=s=>(s.name||'').trim()||'مقاول '+(s.trade||'بدون اسم'),cn=new Map();
+    SU.forEach(s=>{if(!cn.has(nm(s)))cn.set(nm(s),{name:nm(s),phone:s.phone||null,trade:s.trade||null})});
+    const names=[...cn.keys()],nk=await ins('contractors',names.map(n=>cn.get(n))),kid={};
+    names.forEach((n,i)=>kid[n]=nk[i].id);
+    const nc=await ins('contracts',SU.map(s=>({project_id:pid(s.project),contractor_id:kid[nm(s)],trade:s.trade||null,contract_value:s.contract||0})));
+    const pays=[];
+    SU.forEach((s,i)=>(s.rows||[]).forEach(r=>pays.push({contract_id:nc[i].id,line_no:r.no||null,description:r.desc||'-',paid:r.paid||0,extra:r.extra||0,other:r.other||0,executed:r.executed||0,retention:r.retention||0,deductions:r.deductions||0})));
+    if(pays.length)await ins('contract_payments',pays);
+    let nb=0;
+    for(const [op,v] of Object.entries((d.boq||{}).byProject||{})){
+      const dv=v.divs||[],nd=await ins('boq_divisions',dv.map((x,i)=>({project_id:pid(op),code:x.id,title:x.title||null,sort_order:i}))),it=[];
+      dv.forEach((x,i)=>(x.items||[]).forEach((y,j)=>it.push({division_id:nd[i].id,item_code:y.item||null,description:y.desc||null,unit:y.unit||null,qty:y.qty,rate:y.rate,is_fixed:!!y.fixed,fixed_amount:y.fixed?(y.amount||0):null,sort_order:j})));
+      if(it.length)await ins('boq_items',it);nb+=it.length;
+    }
+    alert('تم الاستيراد:\n'+oldP.length+' مشاريع، '+X.length+' مصروف (إجمالي '+f3(sum(X,'actual'))+')، '+I.length+' مدخل (إجمالي '+f3(sum(I,'amount'))+')\n'+SU.length+' عقود مقاولين، '+M.length+' فاتورة مواد، '+nb+' بند BOQ\nبنود حسابات مخصصة: '+items.length+' (تم تخطي '+(all-items.length)+' مكررة)');
+    inp.value='';load();
+  }catch(e){alert('توقف الاستيراد: '+e.message+'\nلا تعيد المحاولة، وابعت لي الرسالة دي.')}
+}
 async function login(){
   const r=await sb.auth.signInWithPassword({email:$('#em').value.trim(),password:$('#pw').value});
   if(err(r.error))return;S.user=r.data.user;load();
